@@ -5,40 +5,39 @@ import (
 	"github.com/miih/miih-search/internal/tokenizer"
 )
 
-func (s *SearchEngine) Index(doc models.Document) {
+func (s *SearchEngine) Index(doc models.Document) error {
+	err := s.storage.SaveDocument(doc)
+	if err != nil {
+		return err
+	}
+
+	documentId, err := s.storage.GetDocument(doc.ID)
+	if err != nil {
+		return err
+	}
+
 	words := tokenizer.Tokenize(doc.Content)
 	for position, word := range words {
-		s.addWord(word, doc.ID, position)
-	}
-}
-
-func (s *SearchEngine) addWord(word string, documentID string, position int) {
-	term, exists := s.index[word]
-	if !exists {
-		term = &models.Term{
-			Word: word,
+		err = s.storage.SaveTerm(models.Term{Word: word})
+		if err != nil {
+			return err
 		}
-		s.index[word] = term
-	}
-	var posting *models.Posting
-
-	for i := range term.Postings {
-
-		if term.Postings[i].DocumentID == documentID {
-
-			posting = &term.Postings[i]
-
-			break
+		termID, err := s.storage.GetTermID(word)
+		if err != nil {
+			return err
 		}
-	}
-	if posting == nil {
-		term.Postings = append(term.Postings, models.Posting{
-			DocumentID: documentID,
-			Frequency:  0,
+		posting := models.Posting{
+			DocumentID: doc.ID,
+			Frequency:  1,
+			Positions:  []int{position},
 			Field:      "content",
-		})
-		posting = &term.Postings[len(term.Postings)-1]
+		}
+
+		err = s.storage.SavePosting(posting, termID, documentId)
+		if err != nil {
+			return err
+		}
+
 	}
-	posting.Frequency++
-	posting.Positions = append(posting.Positions, position)
+	return nil
 }
