@@ -1,8 +1,8 @@
 package engine
 
 import (
+	"github.com/miih/miih-search/cmd/analyzer"
 	"github.com/miih/miih-search/internal/models"
-	"github.com/miih/miih-search/internal/tokenizer"
 )
 
 func (s *SearchEngine) Index(doc models.Document) error {
@@ -16,7 +16,7 @@ func (s *SearchEngine) Index(doc models.Document) error {
 		return err
 	}
 
-	words := tokenizer.Tokenize(doc.Content)
+	words := analyzer.Tokenize(doc.Content)
 	for position, word := range words {
 		err = s.storage.SaveTerm(models.Term{Word: word})
 		if err != nil {
