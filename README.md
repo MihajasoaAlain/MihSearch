@@ -2,7 +2,7 @@
 
 **MiihSearch** is a lightweight, embeddable search engine written in Go. It indexes documents through a configurable text-analysis pipeline, stores an inverted index in PostgreSQL, and aims to become a reusable search solution you can drop into any application — web apps, e-commerce platforms, SaaS products, CMSs, or internal tools — without relying on a heavyweight external search service.
 
-> **Status:** early development. Indexing and persistence work today; database-backed search is in progress. See the [Roadmap](#roadmap).
+> **Status:** early development. Indexing, persistence, and database-backed single-term search work today. See the [Roadmap](#roadmap).
 
 ---
 
@@ -11,6 +11,8 @@
 * **Document indexing** — index structured documents (`ID`, `Type`, `Title`, `Content`)
 * **Inverted index** — term → document postings with positions and frequencies
 * **Text analysis pipeline** — tokenization, lowercasing, punctuation removal, accent removal, and stop-word filtering
+* **Database-backed search** — single-term search that queries the inverted index in PostgreSQL and returns frequency-scored results
+* **Pluggable storage** — the engine and searcher depend on a `Storage` interface, so the PostgreSQL backend can be swapped out
 * **PostgreSQL persistence** — durable storage via [pgx](https://github.com/jackc/pgx)
 * **Automatic schema creation** — tables are created on startup, no manual migration needed
 
@@ -43,7 +45,7 @@ DATABASE_URL=postgres://user:password@localhost:5432/miihsearch
 go run ./cmd/server
 ```
 
-On startup, MiihSearch connects to PostgreSQL, creates the schema if it doesn't exist, and indexes the sample documents defined in `cmd/server/main.go`.
+On startup, MiihSearch connects to PostgreSQL, creates the schema if it doesn't exist, indexes the sample documents defined in `cmd/server/main.go`, and runs a sample search whose results are printed to the console.
 
 ---
 
@@ -55,6 +57,7 @@ package main
 import (
     "github.com/miih/miih-search/internal/engine"
     "github.com/miih/miih-search/internal/models"
+    "github.com/miih/miih-search/internal/searcher"
     "github.com/miih/miih-search/internal/storage"
 )
 
@@ -81,8 +84,14 @@ func main() {
         panic(err)
     }
 
-    // Search the index.
-    results := search.Search("printer")
+    // Search the index. Results are scored by term frequency.
+    s := searcher.NewSearcher(db)
+    results, err := s.Search("printer")
+    if err != nil {
+        panic(err)
+    }
+    // results: []models.SearchResult{DocumentID, Frequency, Field, Score}
+    _ = results
 }
 ```
 
@@ -104,7 +113,9 @@ The index is persisted across three tables:
 | ----------- | ----------------------------------------------------------- |
 | `documents` | Document metadata and content                               |
 | `terms`     | Unique indexed words                                        |
-| `postings`  | Links terms to documents, with frequencies and positions    |
+| `postings`  | Links terms to documents, with frequencies, positions, and the field they appear in |
+
+At query time, the `Searcher` looks a term up in PostgreSQL (`terms` joined with `postings`) and returns one `SearchResult` per matching document, currently scored by term frequency.
 
 ---
 
@@ -118,12 +129,13 @@ The index is persisted across three tables:
                      MiihSearch SDK
                             |
             +---------------+---------------+
-            |         Search Engine         |
+            |   Search Engine  |  Searcher  |
+            |    (indexing)    |  (queries) |
             +---------------+---------------+
                             |
                  +----------+----------+
                  |                     |
-             Analyzer            Storage Layer
+             Analyzer         Storage interface
                  |                     |
           Tokenization            PostgreSQL
           Lowercasing
@@ -139,10 +151,11 @@ cmd/
     analyzer/     # Text-analysis pipeline (tokenizer, normalizers, stop words)
     server/       # Application entry point
 internal/
-    engine/       # Search engine: indexing and search
+    engine/       # Search engine: document indexing
+    searcher/     # Query side: term lookup and result scoring
     models/       # Domain types: Document, Term, Posting, SearchResult
     repository/   # Data-access layer
-    storage/      # PostgreSQL storage and schema migration
+    storage/      # Storage interface, PostgreSQL implementation, schema migration
 ```
 
 ---
@@ -155,7 +168,7 @@ internal/
 * [x] Inverted index
 * [x] Text analyzer
 * [x] PostgreSQL persistence
-* [ ] Database-backed search
+* [x] Database-backed search (single term, frequency-scored)
 * [ ] Multi-term search
 * [ ] Field-aware indexing (title / content)
 
