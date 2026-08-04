@@ -36,6 +36,6 @@ func main() {
 		Title:   "Canon Printer",
 		Content: "imprimante jet encre",
 	})
-	results := search.Search("imprimante")
-	fmt.Printf("%+v\n", results)
+	//results := search.Search("imprimante")
+	//fmt.Printf("%+v\n", results)
 }
