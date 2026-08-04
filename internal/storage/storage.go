@@ -8,4 +8,5 @@ type Storage interface {
 	SavePosting(posting models.Posting, termID int, documentID int) error
 	GetTermID(word string) (int, error)
 	GetDocument(externalID string) (int, error)
+	FindPostingByTerm(word string) ([]models.Posting, error)
 }
