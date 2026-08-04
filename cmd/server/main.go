@@ -6,6 +6,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/miih/miih-search/internal/engine"
 	"github.com/miih/miih-search/internal/models"
+	searcher2 "github.com/miih/miih-search/internal/searcher"
 	"github.com/miih/miih-search/internal/storage"
 )
 
@@ -36,6 +37,12 @@ func main() {
 		Title:   "Canon Printer",
 		Content: "imprimante jet encre",
 	})
+
+	searcher := searcher2.NewSearcher(storage)
+	results, err := searcher.Search("imprimante")
+	fmt.Printf("%+v\n", results)
+	//postings, err := storage.FindPostingByTerm("imprimante")
+	//fmt.Printf("%+v\n", postings)
 	//results := search.Search("imprimante")
 	//fmt.Printf("%+v\n", results)
 }
