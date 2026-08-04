@@ -1,18 +1,15 @@
 package engine
 
 import (
-	"github.com/miih/miih-search/internal/models"
 	"github.com/miih/miih-search/internal/storage"
 )
 
 type SearchEngine struct {
-	index   map[string]models.Term
-	storage *storage.PostgresStorage
+	storage storage.Storage
 }
 
-func NewSearchEngine(db *storage.PostgresStorage) *SearchEngine {
+func NewSearchEngine(db storage.Storage) *SearchEngine {
 	return &SearchEngine{
-		index:   make(map[string]models.Term),
 		storage: db,
 	}
 }
