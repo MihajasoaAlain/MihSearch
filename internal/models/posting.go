@@ -1,7 +1,7 @@
 package models
 
 type Posting struct {
-	DocumentID string
+	DocumentID int
 	Frequency  int
 	Positions  []int
 	Field      string

@@ -1,8 +1,10 @@
 package models
 
 type SearchResult struct {
-	DocumentID string
-	Frequency  int
-	Field      string
+	DocumentID int
+	ExternalID string
+	Type       string
+	Title      string
+	Content    string
 	Score      float64
 }
