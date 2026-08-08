@@ -1,8 +1,9 @@
 package models
 
 type Document struct {
-	ID      string
-	Type    string
-	Title   string
-	Content string
+	ID         string
+	InternalID int
+	Type       string
+	Title      string
+	Content    string
 }

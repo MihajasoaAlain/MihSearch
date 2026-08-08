@@ -2,47 +2,41 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/miih/miih-search/internal/engine"
-	"github.com/miih/miih-search/internal/models"
-	searcher2 "github.com/miih/miih-search/internal/searcher"
+	"github.com/miih/miih-search/internal/searcher"
 	"github.com/miih/miih-search/internal/storage"
 )
 
 func main() {
-	err := godotenv.Load()
-	storage, err := storage.NewPostgresStorage()
+	if err := godotenv.Load(); err != nil {
+		log.Println("no .env loaded:", err)
+	}
+
+	store, err := storage.NewPostgresStorage()
 	if err != nil {
 		panic(err)
 	}
-	err = storage.CreateTables()
+	err = store.CreateTables()
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("DATABASE ready")
 
-	search := engine.NewSearchEngine(storage)
+	if len(os.Args) < 2 {
+		fmt.Println("usage: server <query>")
+		return
+	}
+	query := os.Args[1]
 
-	search.Index(models.Document{
-		ID:      "1",
-		Type:    "product",
-		Title:   "HP Printer",
-		Content: "imprimante laser wifi couleur",
-	})
-
-	search.Index(models.Document{
-		ID:      "2",
-		Type:    "product",
-		Title:   "Canon Printer",
-		Content: "imprimante jet encre",
-	})
-
-	searcher := searcher2.NewSearcher(storage)
-	results, err := searcher.Search("imprimante")
-	fmt.Printf("%+v\n", results)
-	//postings, err := storage.FindPostingByTerm("imprimante")
-	//fmt.Printf("%+v\n", postings)
-	//results := search.Search("imprimante")
-	//fmt.Printf("%+v\n", results)
+	search := searcher.NewSearcher(store)
+	results, err := search.Searcher(query)
+	if err != nil {
+		panic(err)
+	}
+	for _, result := range results {
+		fmt.Printf("%.2f  [%s] %s\n", result.Score, result.ExternalID, result.Title)
+	}
 }
