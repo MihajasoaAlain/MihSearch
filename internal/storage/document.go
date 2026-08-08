@@ -37,3 +37,14 @@ func (p *PostgresStorage) GetDocument(externalID string) (int, error) {
 	return id, err
 
 }
+func (p *PostgresStorage) GetDocumentByID(id int) (models.Document, error) {
+	query := `
+SELECT id, external_id, type, title, content FROM documents WHERE id = $1; `
+	var doc models.Document
+	err := p.db.QueryRow(
+		context.Background(),
+		query,
+		id,
+	).Scan(&doc.InternalID, &doc.ID, &doc.Type, &doc.Title, &doc.Content)
+	return doc, err
+}

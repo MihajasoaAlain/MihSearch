@@ -9,4 +9,5 @@ type Storage interface {
 	GetTermID(word string) (int, error)
 	GetDocument(externalID string) (int, error)
 	FindPostingByTerm(word string) ([]models.Posting, error)
+	GetDocumentByID(id int) (models.Document, error)
 }
