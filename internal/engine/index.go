@@ -27,7 +27,7 @@ func (s *SearchEngine) Index(doc models.Document) error {
 			return err
 		}
 		posting := models.Posting{
-			DocumentID: doc.ID,
+			DocumentID: documentId,
 			Frequency:  1,
 			Positions:  []int{position},
 			Field:      "content",
