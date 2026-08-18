@@ -2,7 +2,7 @@
 
 **MiihSearch** is a lightweight, embeddable search engine written in Go. It indexes documents through a configurable text-analysis pipeline, stores an inverted index in PostgreSQL, and aims to become a reusable search solution you can drop into any application — web apps, e-commerce platforms, SaaS products, CMSs, or internal tools — without relying on a heavyweight external search service.
 
-> **Status:** early development. The core engine is complete: indexing, persistence, and multi-term, field-aware search work today. See the [Roadmap](#roadmap).
+> **Status:** early development. The core engine is complete: indexing, persistence, and multi-term, field-aware search ranked with BM25 work today. See the [Roadmap](#roadmap).
 
 ---
 
@@ -12,7 +12,8 @@
 * **Inverted index** — term → document postings with positions and frequencies
 * **Text analysis pipeline** — tokenization, lowercasing, punctuation removal, accent removal, and stop-word filtering
 * **Field-aware indexing** — title and content are indexed separately, and a title match weighs more than a content match
-* **Multi-term search** — every term of the query is resolved in one round trip; documents covering more of the query rank higher
+* **Multi-term search** — every term of the query is resolved in one round trip
+* **BM25 ranking** — matches are weighed by how rare the term is and how long the field it sits in is, not by raw frequency
 * **Idempotent indexing** — re-indexing a document refreshes it and drops the terms it no longer contains
 * **Pluggable storage** — the engine and searcher depend on a `Storage` interface; PostgreSQL and in-memory backends ship with the project
 * **PostgreSQL persistence** — durable storage via [pgx](https://github.com/jackc/pgx)
@@ -53,9 +54,9 @@ On startup, MiihSearch connects to PostgreSQL and creates or migrates the schema
 
 ```text
 query: "wireless printer" — 3 result(s)
-  5.00  [2] Canon Wireless Printer  (matched: wireless, printer)
-  4.00  [1] HP Printer  (matched: wireless, printer)
-  4.00  [3] Choosing a laser printer  (matched: printer)
+  1.36  [2] Canon Wireless Printer  (matched: wireless, printer)
+  0.90  [1] HP Printer  (matched: wireless, printer)
+  0.41  [3] Choosing a laser printer  (matched: printer)
 ```
 
 ### Test
@@ -133,19 +134,28 @@ The analyzer applies, in order: lowercasing, punctuation removal, accent removal
 
 Title and content are analyzed as two separate fields, and each distinct term produces one posting per field, carrying how many times it occurred and every position where it was found. Indexing a document that already exists refreshes it: its previous postings are discarded first, so a term removed from the new version stops matching it.
 
-The index is persisted across three tables:
+The index is persisted across four tables:
 
 | Table       | Purpose                                                     |
 | ----------- | ----------------------------------------------------------- |
 | `documents` | Document metadata and content                               |
 | `terms`     | Unique indexed words                                        |
 | `postings`  | Links terms to documents, with frequencies, positions, and the field they appear in — unique per `(term, document, field)` |
+| `document_fields` | Length of each indexed field, in terms — what BM25 normalizes against |
 
 ### Querying
 
 The query goes through the same analyzer, so a search matches whatever the indexer stored. All of its terms are then resolved in a single query (`terms` joined with `postings`), and the matching documents are loaded in one more.
 
-Each match contributes `frequency × field boost` to a document's score, where a title match is worth twice a content match. Results are ranked by how many distinct query terms they matched first, then by score — a document covering the whole query always outranks one that only matched a single common word.
+Ranking is BM25, applied per field and combined with the field weights, so a title match still counts twice a content match. Three things decide a score:
+
+* **Rarity.** A term present in nearly every document says almost nothing about the ones it matches; a rare term is close to an identifier. This is the inverse document frequency, and it is what separates a real ranking from counting occurrences.
+* **Saturation.** A term found ten times is worth more than a term found once, but not ten times more — the contribution flattens out as frequency grows (`k1 = 1.2`).
+* **Field length.** The same match counts for more in a short title than in a long body (`b = 0.75`).
+
+A document matching two common words can therefore legitimately rank below one matching a single rare word. The document frequency of each term comes straight from its posting list, so ranking costs no extra query.
+
+> **Upgrading an existing index:** BM25 needs field lengths, which are recorded during indexing and cannot be reconstructed afterwards. An index built before this was added must be re-indexed — documents indexed without a recorded length simply skip length normalization until then.
 
 ---
 
@@ -203,8 +213,7 @@ internal/
 
 ### Phase 2 — Search Quality
 
-* [ ] TF-IDF scoring
-* [ ] BM25 ranking
+* [x] BM25 ranking — supersedes the separate TF-IDF step, which it subsumes
 * [ ] Phrase search
 * [ ] Prefix search and autocomplete
 * [ ] Fuzzy search
