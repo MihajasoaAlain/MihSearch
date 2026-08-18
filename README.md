@@ -2,7 +2,7 @@
 
 **MiihSearch** is a lightweight, embeddable search engine written in Go. It indexes documents through a configurable text-analysis pipeline, stores an inverted index in PostgreSQL, and aims to become a reusable search solution you can drop into any application — web apps, e-commerce platforms, SaaS products, CMSs, or internal tools — without relying on a heavyweight external search service.
 
-> **Status:** early development. Indexing, persistence, and database-backed single-term search work today. See the [Roadmap](#roadmap).
+> **Status:** early development. The core engine is complete: indexing, persistence, and multi-term, field-aware search work today. See the [Roadmap](#roadmap).
 
 ---
 
@@ -11,10 +11,12 @@
 * **Document indexing** — index structured documents (`ID`, `Type`, `Title`, `Content`)
 * **Inverted index** — term → document postings with positions and frequencies
 * **Text analysis pipeline** — tokenization, lowercasing, punctuation removal, accent removal, and stop-word filtering
-* **Database-backed search** — single-term search that queries the inverted index in PostgreSQL and returns frequency-scored results
-* **Pluggable storage** — the engine and searcher depend on a `Storage` interface, so the PostgreSQL backend can be swapped out
+* **Field-aware indexing** — title and content are indexed separately, and a title match weighs more than a content match
+* **Multi-term search** — every term of the query is resolved in one round trip; documents covering more of the query rank higher
+* **Idempotent indexing** — re-indexing a document refreshes it and drops the terms it no longer contains
+* **Pluggable storage** — the engine and searcher depend on a `Storage` interface; PostgreSQL and in-memory backends ship with the project
 * **PostgreSQL persistence** — durable storage via [pgx](https://github.com/jackc/pgx)
-* **Automatic schema creation** — tables are created on startup, no manual migration needed
+* **Automatic schema creation** — tables and indexes are created and migrated on startup, no manual migration needed
 
 ---
 
@@ -42,10 +44,27 @@ DATABASE_URL=postgres://user:password@localhost:5432/miihsearch
 ### Run
 
 ```bash
-go run ./cmd/server
+go run ./cmd/server                            # index the sample documents, then run a sample search
+go run ./cmd/server index                      # index the sample documents
+go run ./cmd/server search "wireless printer"  # search the index
 ```
 
-On startup, MiihSearch connects to PostgreSQL, creates the schema if it doesn't exist, indexes the sample documents defined in `cmd/server/main.go`, and runs a sample search whose results are printed to the console.
+On startup, MiihSearch connects to PostgreSQL and creates or migrates the schema. With no argument it also indexes the sample documents defined in `cmd/server/main.go` and prints the results of a sample search:
+
+```text
+query: "wireless printer" — 3 result(s)
+  5.00  [2] Canon Wireless Printer  (matched: wireless, printer)
+  4.00  [1] HP Printer  (matched: wireless, printer)
+  4.00  [3] Choosing a laser printer  (matched: printer)
+```
+
+### Test
+
+The test suite runs against the in-memory backend, so no database is required:
+
+```bash
+go test ./...
+```
 
 ---
 
@@ -84,20 +103,25 @@ func main() {
         panic(err)
     }
 
-    // Search the index. Results are scored by term frequency.
+    // Search the index. Results come back ranked, best first.
     s := searcher.NewSearcher(db)
-    results, err := s.Search("printer")
+    results, err := s.Search("wireless printer")
     if err != nil {
         panic(err)
     }
-    // results: []models.SearchResult{DocumentID, Frequency, Field, Score}
+    // results: []models.SearchResult{DocumentID, ExternalID, Type, Title,
+    //                                Content, MatchedTerms, Score}
     _ = results
 }
 ```
 
+Swap `storage.NewPostgresStorage()` for `storage.NewMemoryStorage()` to run the same engine without a database — both satisfy the `storage.Storage` interface.
+
 ---
 
 ## How It Works
+
+### Indexing
 
 Every document passes through the analysis pipeline before being written to the inverted index:
 
@@ -105,7 +129,9 @@ Every document passes through the analysis pipeline before being written to the 
 Document → Analyzer → Tokenizer → Normalized Terms → Inverted Index → PostgreSQL
 ```
 
-The analyzer applies, in order: tokenization, lowercasing, punctuation removal, accent removal, and stop-word filtering.
+The analyzer applies, in order: lowercasing, punctuation removal, accent removal, tokenization, and stop-word filtering. Dropped stop words do not shift the positions of the terms around them, so phrase and proximity queries stay possible later on.
+
+Title and content are analyzed as two separate fields, and each distinct term produces one posting per field, carrying how many times it occurred and every position where it was found. Indexing a document that already exists refreshes it: its previous postings are discarded first, so a term removed from the new version stops matching it.
 
 The index is persisted across three tables:
 
@@ -113,9 +139,13 @@ The index is persisted across three tables:
 | ----------- | ----------------------------------------------------------- |
 | `documents` | Document metadata and content                               |
 | `terms`     | Unique indexed words                                        |
-| `postings`  | Links terms to documents, with frequencies, positions, and the field they appear in |
+| `postings`  | Links terms to documents, with frequencies, positions, and the field they appear in — unique per `(term, document, field)` |
 
-At query time, the `Searcher` looks a term up in PostgreSQL (`terms` joined with `postings`) and returns one `SearchResult` per matching document, currently scored by term frequency.
+### Querying
+
+The query goes through the same analyzer, so a search matches whatever the indexer stored. All of its terms are then resolved in a single query (`terms` joined with `postings`), and the matching documents are loaded in one more.
+
+Each match contributes `frequency × field boost` to a document's score, where a title match is worth twice a content match. Results are ranked by how many distinct query terms they matched first, then by score — a document covering the whole query always outranks one that only matched a single common word.
 
 ---
 
@@ -137,7 +167,7 @@ At query time, the `Searcher` looks a term up in PostgreSQL (`terms` joined with
                  |                     |
              Analyzer         Storage interface
                  |                     |
-          Tokenization            PostgreSQL
+          Tokenization         PostgreSQL / Memory
           Lowercasing
           Punctuation removal
           Accent removal
@@ -152,10 +182,9 @@ cmd/
     server/       # Application entry point
 internal/
     engine/       # Search engine: document indexing
-    searcher/     # Query side: term lookup and result scoring
+    searcher/     # Query side: term lookup and result ranking
     models/       # Domain types: Document, Term, Posting, SearchResult
-    repository/   # Data-access layer
-    storage/      # Storage interface, PostgreSQL implementation, schema migration
+    storage/      # Storage interface, PostgreSQL and in-memory backends, schema migration
 ```
 
 ---
@@ -169,8 +198,8 @@ internal/
 * [x] Text analyzer
 * [x] PostgreSQL persistence
 * [x] Database-backed search (single term, frequency-scored)
-* [ ] Multi-term search
-* [ ] Field-aware indexing (title / content)
+* [x] Multi-term search
+* [x] Field-aware indexing (title / content)
 
 ### Phase 2 — Search Quality
 
