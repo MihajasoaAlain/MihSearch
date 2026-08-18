@@ -13,10 +13,15 @@ var stopWords = map[string]struct{}{
 	"ou":  {},
 }
 
+func IsStopWord(word string) bool {
+	_, ok := stopWords[word]
+	return ok
+}
+
 func RemoveStopWords(words []string) []string {
 	result := make([]string, 0, len(words))
 	for _, word := range words {
-		if _, ok := stopWords[word]; ok {
+		if IsStopWord(word) {
 			continue
 		}
 		result = append(result, word)

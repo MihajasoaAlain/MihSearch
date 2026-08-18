@@ -6,5 +6,7 @@ type SearchResult struct {
 	Type       string
 	Title      string
 	Content    string
-	Score      float64
+	// MatchedTerms lists the query terms this document actually matched.
+	MatchedTerms []string
+	Score        float64
 }
