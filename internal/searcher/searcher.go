@@ -28,11 +28,12 @@ func NewSearcher(storage storage.Storage) *Searcher {
 }
 
 // Search runs the query through the analysis pipeline and returns every document
-// matching at least one term.
+// matching at least one term, ranked by BM25.
 //
-// Results are ranked by how many distinct query terms they matched first, then
-// by score, so a document covering the whole query always outranks one that only
-// matched a common word. The score itself sums frequency × field boost.
+// Each field of a document is scored on its own and the scores are combined
+// with the field weights, so a title match still counts double. Rarity does the
+// rest: a document matching two common words can legitimately rank below one
+// matching a single rare word.
 func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 	terms := uniqueTerms(analyzer.Analyzer(query))
 	if len(terms) == 0 {
@@ -43,28 +44,57 @@ func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(postingsByTerm) == 0 {
+		return []models.SearchResult{}, nil
+	}
+
+	stats, err := s.storage.GetIndexStats()
+	if err != nil {
+		return nil, err
+	}
+
+	documentIDs := candidateDocuments(terms, postingsByTerm)
+	fieldLengths, err := s.storage.GetFieldLengths(documentIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	type accumulator struct {
 		score        float64
 		matchedTerms []string
 	}
-	accumulators := make(map[int]*accumulator)
+	accumulators := make(map[int]*accumulator, len(documentIDs))
 
 	// Iterate over terms rather than over the map, so matched terms are reported
 	// in query order.
 	for _, term := range terms {
-		for _, posting := range postingsByTerm[term] {
+		postings := postingsByTerm[term]
+		if len(postings) == 0 {
+			continue
+		}
+
+		// The posting list is the term's whole presence in the index, so its
+		// document frequency is already in hand: no extra query needed.
+		weight := idf(stats.DocumentCount, documentFrequency(postings))
+
+		for _, posting := range postings {
 			boost, ok := fieldBoost[posting.Field]
 			if !ok {
 				boost = defaultFieldBoost
 			}
+
+			score := weight * termScore(
+				posting.Frequency,
+				fieldLengths[posting.DocumentID][posting.Field],
+				stats.AverageFieldLength[posting.Field],
+			) * boost
 
 			acc, exists := accumulators[posting.DocumentID]
 			if !exists {
 				acc = &accumulator{}
 				accumulators[posting.DocumentID] = acc
 			}
-			acc.score += float64(posting.Frequency) * boost
+			acc.score += score
 			// The same term can match both fields of a document; count it once.
 			if len(acc.matchedTerms) == 0 || acc.matchedTerms[len(acc.matchedTerms)-1] != term {
 				acc.matchedTerms = append(acc.matchedTerms, term)
@@ -72,14 +102,6 @@ func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 		}
 	}
 
-	if len(accumulators) == 0 {
-		return []models.SearchResult{}, nil
-	}
-
-	documentIDs := make([]int, 0, len(accumulators))
-	for documentID := range accumulators {
-		documentIDs = append(documentIDs, documentID)
-	}
 	documents, err := s.storage.GetDocumentsByIDs(documentIDs)
 	if err != nil {
 		return nil, err
@@ -108,11 +130,37 @@ func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 	return results, nil
 }
 
+// candidateDocuments lists every document touched by the query, in a stable
+// order so that equally scored results do not shuffle between runs.
+func candidateDocuments(terms []string, postingsByTerm map[string][]models.Posting) []int {
+	seen := make(map[int]struct{})
+	documentIDs := make([]int, 0)
+	for _, term := range terms {
+		for _, posting := range postingsByTerm[term] {
+			if _, exists := seen[posting.DocumentID]; exists {
+				continue
+			}
+			seen[posting.DocumentID] = struct{}{}
+			documentIDs = append(documentIDs, posting.DocumentID)
+		}
+	}
+	sort.Ints(documentIDs)
+	return documentIDs
+}
+
+// documentFrequency counts the documents a term appears in, not its postings:
+// a term found in both the title and the content of one document still only
+// covers a single document.
+func documentFrequency(postings []models.Posting) int {
+	documents := make(map[int]struct{}, len(postings))
+	for _, posting := range postings {
+		documents[posting.DocumentID] = struct{}{}
+	}
+	return len(documents)
+}
+
 func sortResults(results []models.SearchResult) {
 	sort.Slice(results, func(i, j int) bool {
-		if len(results[i].MatchedTerms) != len(results[j].MatchedTerms) {
-			return len(results[i].MatchedTerms) > len(results[j].MatchedTerms)
-		}
 		if results[i].Score != results[j].Score {
 			return results[i].Score > results[j].Score
 		}
