@@ -202,3 +202,151 @@ func TestSearchUnknownTerm(t *testing.T) {
 		t.Errorf("got %v, want no results", externalIDs(results))
 	}
 }
+
+func TestSearchPhraseRequiresAdjacentTerms(t *testing.T) {
+	store := newIndex(t,
+		models.Document{ID: "adjacent", Title: "Guide", Content: "a wireless printer for the office"},
+		models.Document{ID: "reversed", Title: "Guide", Content: "a printer that is wireless"},
+		models.Document{ID: "apart", Title: "Guide", Content: "wireless network and a laser printer"},
+	)
+
+	results, err := NewSearcher(store).Search(`"wireless printer"`)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	// All three documents hold both terms; only one holds the phrase.
+	if want := []string{"adjacent"}; !reflect.DeepEqual(externalIDs(results), want) {
+		t.Fatalf("results = %v, want %v", externalIDs(results), want)
+	}
+}
+
+func TestSearchPhraseIgnoresStopWordsOnBothSides(t *testing.T) {
+	// Stop words keep their position when they are dropped, so the query's own
+	// gaps have to line up with the document's: "printer of the year" leaves
+	// "printer" and "year" three positions apart on either side.
+	store := newIndex(t,
+		models.Document{ID: "same-gap", Title: "Guide", Content: "printer of the year"},
+		models.Document{ID: "no-gap", Title: "Guide", Content: "printer year"},
+	)
+
+	results, err := NewSearcher(store).Search(`"printer of the year"`)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if want := []string{"same-gap"}; !reflect.DeepEqual(externalIDs(results), want) {
+		t.Fatalf("results = %v, want %v", externalIDs(results), want)
+	}
+}
+
+func TestSearchPhraseDoesNotSpanFields(t *testing.T) {
+	// The title ends on "wireless" and the content opens on "printer", but the
+	// two are unrelated texts: their positions cannot be read as one sequence.
+	store := newIndex(t,
+		models.Document{ID: "straddling", Title: "Laser wireless", Content: "printer for the office"},
+	)
+
+	results, err := NewSearcher(store).Search(`"wireless printer"`)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %v, want no result", externalIDs(results))
+	}
+}
+
+func TestSearchPhraseMixedWithFreeTerms(t *testing.T) {
+	// The phrase filters, the free term only ranks: both documents hold
+	// "wireless printer", and "canon" decides which comes first.
+	store := newIndex(t,
+		models.Document{ID: "canon", Title: "Canon", Content: "a wireless printer"},
+		models.Document{ID: "generic", Title: "Guide", Content: "a wireless printer"},
+		models.Document{ID: "canon-only", Title: "Canon", Content: "a laser scanner"},
+	)
+
+	results, err := NewSearcher(store).Search(`"wireless printer" canon`)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	if want := []string{"canon", "generic"}; !reflect.DeepEqual(externalIDs(results), want) {
+		t.Fatalf("results = %v, want %v", externalIDs(results), want)
+	}
+	if want := []string{"wireless", "printer", "canon"}; !reflect.DeepEqual(results[0].MatchedTerms, want) {
+		t.Errorf("matched terms = %v, want %v", results[0].MatchedTerms, want)
+	}
+}
+
+func TestSearchSeveralPhrasesAllHold(t *testing.T) {
+	store := newIndex(t,
+		models.Document{ID: "both", Title: "Guide", Content: "a wireless printer with duplex printing"},
+		models.Document{ID: "one", Title: "Guide", Content: "a wireless printer with manual printing"},
+	)
+
+	results, err := NewSearcher(store).Search(`"wireless printer" "duplex printing"`)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if want := []string{"both"}; !reflect.DeepEqual(externalIDs(results), want) {
+		t.Fatalf("results = %v, want %v", externalIDs(results), want)
+	}
+}
+
+func TestSearchPhraseRanksLikeAnyOtherMatch(t *testing.T) {
+	// Quoting changes which documents are eligible, not how the survivors are
+	// scored: BM25 and the title boost still apply.
+	store := newIndex(t,
+		models.Document{ID: "title-match", Title: "Wireless printer", Content: "office equipment"},
+		models.Document{ID: "content-match", Title: "Office equipment", Content: "wireless printer"},
+	)
+
+	results, err := NewSearcher(store).Search(`"wireless printer"`)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].ExternalID != "title-match" {
+		t.Errorf("ranking = %v, want the title match first", externalIDs(results))
+	}
+}
+
+func TestSearchQuoteEdgeCases(t *testing.T) {
+	store := newIndex(t,
+		models.Document{ID: "1", Title: "HP Printer", Content: "a wireless laser printer"},
+	)
+	s := NewSearcher(store)
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		// An unclosed quote is a query still being typed, not an error: the
+		// tail falls back to free terms.
+		{"unclosed quote", `"wireless printer`, []string{"1"}},
+		// A single quoted term is just a term — there is no gap to check.
+		{"single term", `"printer"`, []string{"1"}},
+		// Nothing survives the pipeline inside the quotes, so nothing to filter on.
+		{"stop words only", `"le de" printer`, []string{"1"}},
+		{"empty quotes", `"" printer`, []string{"1"}},
+		{"phrase never indexed", `"printer wireless"`, nil},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			results, err := s.Search(test.query)
+			if err != nil {
+				t.Fatalf("Search(%q) error = %v", test.query, err)
+			}
+			got := externalIDs(results)
+			if len(got) == 0 && len(test.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("Search(%q) = %v, want %v", test.query, got, test.want)
+			}
+		})
+	}
+}

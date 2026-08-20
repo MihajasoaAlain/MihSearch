@@ -3,7 +3,6 @@ package searcher
 import (
 	"sort"
 
-	"github.com/miih/miih-search/cmd/analyzer"
 	"github.com/miih/miih-search/internal/models"
 	"github.com/miih/miih-search/internal/storage"
 )
@@ -34,8 +33,14 @@ func NewSearcher(storage storage.Storage) *Searcher {
 // with the field weights, so a title match still counts double. Rarity does the
 // rest: a document matching two common words can legitimately rank below one
 // matching a single rare word.
+//
+// Terms wrapped in double quotes are read as a phrase and narrow the candidates
+// before any of that happens: only documents where those terms sit next to each
+// other, in order and within one field, survive. Free terms outside the quotes
+// still take part in the ranking of whatever is left.
 func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
-	terms := uniqueTerms(analyzer.Analyzer(query))
+	parsed := parseQuery(query)
+	terms := parsed.terms
 	if len(terms) == 0 {
 		return []models.SearchResult{}, nil
 	}
@@ -48,12 +53,20 @@ func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 		return []models.SearchResult{}, nil
 	}
 
+	// Phrases are resolved from the posting positions already in hand, so the
+	// filter costs no extra query — and an unsatisfiable phrase spares us the
+	// ranking queries entirely.
+	allowed := documentsMatchingPhrases(parsed.phrases, postingsByTerm)
+	if allowed != nil && len(allowed) == 0 {
+		return []models.SearchResult{}, nil
+	}
+
 	stats, err := s.storage.GetIndexStats()
 	if err != nil {
 		return nil, err
 	}
 
-	documentIDs := candidateDocuments(terms, postingsByTerm)
+	documentIDs := candidateDocuments(terms, postingsByTerm, allowed)
 	fieldLengths, err := s.storage.GetFieldLengths(documentIDs)
 	if err != nil {
 		return nil, err
@@ -78,6 +91,10 @@ func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 		weight := idf(stats.DocumentCount, documentFrequency(postings))
 
 		for _, posting := range postings {
+			if !isAllowed(allowed, posting.DocumentID) {
+				continue
+			}
+
 			boost, ok := fieldBoost[posting.Field]
 			if !ok {
 				boost = defaultFieldBoost
@@ -131,13 +148,18 @@ func (s *Searcher) Search(query string) ([]models.SearchResult, error) {
 }
 
 // candidateDocuments lists every document touched by the query, in a stable
-// order so that equally scored results do not shuffle between runs.
-func candidateDocuments(terms []string, postingsByTerm map[string][]models.Posting) []int {
+// order so that equally scored results do not shuffle between runs. Documents
+// the phrase filter rejected never make it into the list, so they cost nothing
+// downstream.
+func candidateDocuments(terms []string, postingsByTerm map[string][]models.Posting, allowed map[int]struct{}) []int {
 	seen := make(map[int]struct{})
 	documentIDs := make([]int, 0)
 	for _, term := range terms {
 		for _, posting := range postingsByTerm[term] {
 			if _, exists := seen[posting.DocumentID]; exists {
+				continue
+			}
+			if !isAllowed(allowed, posting.DocumentID) {
 				continue
 			}
 			seen[posting.DocumentID] = struct{}{}
@@ -169,15 +191,12 @@ func sortResults(results []models.SearchResult) {
 	})
 }
 
-func uniqueTerms(words []string) []string {
-	seen := make(map[string]struct{}, len(words))
-	terms := make([]string, 0, len(words))
-	for _, word := range words {
-		if _, exists := seen[word]; exists {
-			continue
-		}
-		seen[word] = struct{}{}
-		terms = append(terms, word)
+// isAllowed reports whether a document survived the phrase filter. A nil set
+// means the query held no phrase, and therefore nothing to filter on.
+func isAllowed(allowed map[int]struct{}, documentID int) bool {
+	if allowed == nil {
+		return true
 	}
-	return terms
+	_, exists := allowed[documentID]
+	return exists
 }
