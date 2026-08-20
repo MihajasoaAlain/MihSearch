@@ -13,10 +13,11 @@ import (
 type MemoryStorage struct {
 	mu sync.RWMutex
 
-	documents   map[int]models.Document
-	documentIDs map[string]int
-	termIDs     map[string]int
-	postings    map[postingKey]models.Posting
+	documents    map[int]models.Document
+	documentIDs  map[string]int
+	termIDs      map[string]int
+	postings     map[postingKey]models.Posting
+	fieldLengths map[int]map[string]int
 
 	nextDocumentID int
 	nextTermID     int
@@ -34,6 +35,7 @@ func NewMemoryStorage() *MemoryStorage {
 		documentIDs:    make(map[string]int),
 		termIDs:        make(map[string]int),
 		postings:       make(map[postingKey]models.Posting),
+		fieldLengths:   make(map[int]map[string]int),
 		nextDocumentID: 1,
 		nextTermID:     1,
 	}
@@ -84,6 +86,67 @@ func (m *MemoryStorage) DeletePostingsByDocument(documentID int) error {
 		}
 	}
 	return nil
+}
+
+func (m *MemoryStorage) SaveFieldLength(documentID int, field string, length int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.fieldLengths[documentID] == nil {
+		m.fieldLengths[documentID] = make(map[string]int)
+	}
+	m.fieldLengths[documentID][field] = length
+	return nil
+}
+
+func (m *MemoryStorage) DeleteFieldLengthsByDocument(documentID int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.fieldLengths, documentID)
+	return nil
+}
+
+func (m *MemoryStorage) GetFieldLengths(documentIDs []int) (map[int]map[string]int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	lengths := make(map[int]map[string]int, len(documentIDs))
+	for _, documentID := range documentIDs {
+		fields, exists := m.fieldLengths[documentID]
+		if !exists {
+			continue
+		}
+		copied := make(map[string]int, len(fields))
+		for field, length := range fields {
+			copied[field] = length
+		}
+		lengths[documentID] = copied
+	}
+	return lengths, nil
+}
+
+func (m *MemoryStorage) GetIndexStats() (models.IndexStats, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	totals := make(map[string]int)
+	counts := make(map[string]int)
+	for _, fields := range m.fieldLengths {
+		for field, length := range fields {
+			totals[field] += length
+			counts[field]++
+		}
+	}
+
+	stats := models.IndexStats{
+		DocumentCount:      len(m.documents),
+		AverageFieldLength: make(map[string]float64, len(totals)),
+	}
+	for field, total := range totals {
+		stats.AverageFieldLength[field] = float64(total) / float64(counts[field])
+	}
+	return stats, nil
 }
 
 func (m *MemoryStorage) GetTermID(word string) (int, error) {

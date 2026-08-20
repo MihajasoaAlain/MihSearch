@@ -24,6 +24,9 @@ func (s *SearchEngine) Index(doc models.Document) error {
 	if err := s.storage.DeletePostingsByDocument(documentID); err != nil {
 		return err
 	}
+	if err := s.storage.DeleteFieldLengthsByDocument(documentID); err != nil {
+		return err
+	}
 
 	fields := []struct {
 		name string
@@ -34,7 +37,15 @@ func (s *SearchEngine) Index(doc models.Document) error {
 	}
 
 	for _, field := range fields {
-		for _, posting := range analyzeField(field.text, field.name) {
+		postings, length := analyzeField(field.text, field.name)
+
+		// BM25 divides a term's frequency by the length of the field it was
+		// found in, so the length has to be recorded while it is known.
+		if err := s.storage.SaveFieldLength(documentID, field.name, length); err != nil {
+			return err
+		}
+
+		for _, posting := range postings {
 			if err := s.storage.SaveTerm(models.Term{Word: posting.word}); err != nil {
 				return err
 			}
@@ -57,10 +68,13 @@ type termPosting struct {
 }
 
 // analyzeField collapses a field into one posting per distinct term, carrying
-// the number of occurrences and every position where the term was found.
-func analyzeField(text string, field string) []termPosting {
+// the number of occurrences and every position where the term was found. The
+// second return value is the field's length: how many terms it contributed to
+// the index, which is what BM25 normalizes against.
+func analyzeField(text string, field string) ([]termPosting, int) {
+	tokens := analyzer.AnalyzeTokens(text)
 	byWord := make(map[string]*models.Posting)
-	for _, token := range analyzer.AnalyzeTokens(text) {
+	for _, token := range tokens {
 		posting, exists := byWord[token.Word]
 		if !exists {
 			byWord[token.Word] = &models.Posting{
@@ -83,5 +97,5 @@ func analyzeField(text string, field string) []termPosting {
 	sort.Slice(postings, func(i, j int) bool {
 		return postings[i].word < postings[j].word
 	})
-	return postings
+	return postings, len(tokens)
 }

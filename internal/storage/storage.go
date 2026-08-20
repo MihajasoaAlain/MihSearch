@@ -14,10 +14,14 @@ type Storage interface {
 	SaveTerm(term models.Term) error
 	SavePosting(posting models.Posting, termID int, documentID int) error
 	DeletePostingsByDocument(documentID int) error
+	SaveFieldLength(documentID int, field string, length int) error
+	DeleteFieldLengthsByDocument(documentID int) error
 	GetTermID(word string) (int, error)
 	GetDocument(externalID string) (int, error)
 	GetDocumentByID(id int) (models.Document, error)
 	GetDocumentsByIDs(ids []int) (map[int]models.Document, error)
 	FindPostingByTerm(word string) ([]models.Posting, error)
 	FindPostingsByTerms(words []string) (map[string][]models.Posting, error)
+	GetFieldLengths(documentIDs []int) (map[int]map[string]int, error)
+	GetIndexStats() (models.IndexStats, error)
 }

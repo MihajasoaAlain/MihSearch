@@ -39,6 +39,16 @@ var migrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS postings_term_id_idx ON postings (term_id);`,
 	`CREATE INDEX IF NOT EXISTS postings_document_id_idx ON postings (document_id);`,
+
+	// BM25 normalizes a term's frequency by how long the field it sits in is,
+	// which cannot be reconstructed after the fact: lengths are recorded while
+	// the document is being analyzed.
+	`CREATE TABLE IF NOT EXISTS document_fields (
+		document_id INT REFERENCES documents(id),
+		field VARCHAR(50) NOT NULL,
+		length INT NOT NULL,
+		PRIMARY KEY (document_id, field)
+	);`,
 }
 
 func (p *PostgresStorage) CreateTables() error {

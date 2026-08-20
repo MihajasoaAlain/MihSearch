@@ -1,6 +1,8 @@
 package searcher
 
 import (
+	"fmt"
+	"math"
 	"reflect"
 	"testing"
 
@@ -71,25 +73,85 @@ func TestSearchBoostsTitleMatches(t *testing.T) {
 	if results[0].ExternalID != "title-match" {
 		t.Errorf("ranking = %v, want the title match first", externalIDs(results))
 	}
-	if results[0].Score != 2 || results[1].Score != 1 {
-		t.Errorf("scores = %v / %v, want the title boosted 2x", results[0].Score, results[1].Score)
+	// Both fields hold a single term, so the whole gap comes from the boost.
+	if ratio := results[0].Score / results[1].Score; math.Abs(ratio-2) > 1e-9 {
+		t.Errorf("title/content score ratio = %v, want 2", ratio)
 	}
 }
 
 func TestSearchScoresFrequency(t *testing.T) {
+	// Both contents hold five terms, so length normalization cancels out and
+	// only the number of occurrences can separate them.
 	store := newIndex(t,
-		models.Document{ID: "1", Title: "Guide", Content: "a laser printer beats an inkjet printer"},
-		models.Document{ID: "2", Title: "Guide", Content: "a printer"},
+		models.Document{ID: "twice", Title: "Guide", Content: "laser printer beats inkjet printer"},
+		models.Document{ID: "once", Title: "Guide", Content: "laser printer beats inkjet scanner"},
 	)
 
 	results, err := NewSearcher(store).Search("printer")
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].ExternalID != "twice" {
+		t.Errorf("ranking = %v, want the document matching twice first", externalIDs(results))
+	}
+}
 
-	if results[0].ExternalID != "1" || results[0].Score != 2 {
-		t.Errorf("top result = %s with score %v, want document 1 with score 2",
-			results[0].ExternalID, results[0].Score)
+func TestSearchPenalizesLongFields(t *testing.T) {
+	// Same term, same frequency, different field lengths: BM25 prefers the
+	// document where the match makes up more of the text.
+	store := newIndex(t,
+		models.Document{ID: "short", Title: "Guide", Content: "wireless printer"},
+		models.Document{ID: "long", Title: "Guide", Content: "wireless printer that also scans copies faxes and staples documents"},
+	)
+
+	results, err := NewSearcher(store).Search("printer")
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if results[0].ExternalID != "short" {
+		t.Errorf("ranking = %v, want the shorter document first", externalIDs(results))
+	}
+}
+
+func TestSearchFavoursRareTerms(t *testing.T) {
+	// A corpus where one word is everywhere and another appears once. Fields
+	// are all the same length, so rarity is the only thing left to rank on.
+	documents := make([]models.Document, 0, 30)
+	for i := 0; i < 28; i++ {
+		documents = append(documents, models.Document{
+			ID:      fmt.Sprintf("filler-%02d", i),
+			Title:   "Catalogue",
+			Content: "printer standard model page",
+		})
+	}
+	documents = append(documents,
+		models.Document{ID: "common-heavy", Title: "Catalogue", Content: "printer printer printer page"},
+		models.Document{ID: "rare-single", Title: "Catalogue", Content: "thermosublimation standard model page"},
+	)
+	store := newIndex(t, documents...)
+
+	results, err := NewSearcher(store).Search("printer thermosublimation")
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	// Under the previous frequency-only scoring, common-heavy won with three
+	// matches. "printer" is in 29 of 30 documents and says almost nothing.
+	if results[0].ExternalID != "rare-single" {
+		t.Fatalf("top result = %s, want the document holding the rare term", results[0].ExternalID)
+	}
+	var heavy models.SearchResult
+	for _, result := range results {
+		if result.ExternalID == "common-heavy" {
+			heavy = result
+		}
+	}
+	if results[0].Score <= heavy.Score {
+		t.Errorf("rare term scored %v, common term matched three times scored %v; rarity should dominate",
+			results[0].Score, heavy.Score)
 	}
 }
 
