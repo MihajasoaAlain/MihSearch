@@ -2,7 +2,7 @@
 
 **MiihSearch** is a lightweight, embeddable search engine written in Go. It indexes documents through a configurable text-analysis pipeline, stores an inverted index in PostgreSQL, and aims to become a reusable search solution you can drop into any application — web apps, e-commerce platforms, SaaS products, CMSs, or internal tools — without relying on a heavyweight external search service.
 
-> **Status:** early development. The core engine is complete: indexing, persistence, and multi-term, field-aware search ranked with BM25 work today. See the [Roadmap](#roadmap).
+> **Status:** early development. The core engine is complete: indexing, persistence, and multi-term, field-aware search ranked with BM25, including phrase queries, work today. See the [Roadmap](#roadmap).
 
 ---
 
@@ -14,6 +14,7 @@
 * **Field-aware indexing** — title and content are indexed separately, and a title match weighs more than a content match
 * **Multi-term search** — every term of the query is resolved in one round trip
 * **BM25 ranking** — matches are weighed by how rare the term is and how long the field it sits in is, not by raw frequency
+* **Phrase search** — quote part of a query to require those words side by side, in order, within one field
 * **Idempotent indexing** — re-indexing a document refreshes it and drops the terms it no longer contains
 * **Pluggable storage** — the engine and searcher depend on a `Storage` interface; PostgreSQL and in-memory backends ship with the project
 * **PostgreSQL persistence** — durable storage via [pgx](https://github.com/jackc/pgx)
@@ -47,7 +48,8 @@ DATABASE_URL=postgres://user:password@localhost:5432/miihsearch
 ```bash
 go run ./cmd/server                            # index the sample documents, then run a sample search
 go run ./cmd/server index                      # index the sample documents
-go run ./cmd/server search "wireless printer"  # search the index
+go run ./cmd/server search "wireless printer"    # search the index
+go run ./cmd/server search '"wireless printer"'  # require the exact phrase
 ```
 
 On startup, MiihSearch connects to PostgreSQL and creates or migrates the schema. With no argument it also indexes the sample documents defined in `cmd/server/main.go` and prints the results of a sample search:
@@ -110,6 +112,13 @@ func main() {
     if err != nil {
         panic(err)
     }
+
+    // Quote a group of words to require them side by side, in order. Terms left
+    // outside the quotes still rank the documents the phrase let through.
+    results, err = s.Search(`"wireless printer" canon`)
+    if err != nil {
+        panic(err)
+    }
     // results: []models.SearchResult{DocumentID, ExternalID, Type, Title,
     //                                Content, MatchedTerms, Score}
     _ = results
@@ -154,6 +163,16 @@ Ranking is BM25, applied per field and combined with the field weights, so a tit
 * **Field length.** The same match counts for more in a short title than in a long body (`b = 0.75`).
 
 A document matching two common words can therefore legitimately rank below one matching a single rare word. The document frequency of each term comes straight from its posting list, so ranking costs no extra query.
+
+### Phrase queries
+
+Wrapping part of a query in double quotes turns it into a phrase: `"wireless printer" canon` only considers documents where *wireless* is immediately followed by *printer*. Quotes are read before the analyzer runs, since punctuation removal would otherwise erase them; everything left outside them stays an ordinary term and takes part in the ranking.
+
+A phrase is a **filter**, not a boost. A document holding both words in the wrong order is not what was asked for, so it is dropped rather than ranked lower. Several quoted groups in one query all have to hold, and a phrase never spans the title and the content — the two are separate texts, and their positions cannot be read as one sequence.
+
+The check runs entirely on the positions already carried by the postings the query fetched, so it costs no extra round trip. Stop words are handled on both sides at once: they keep their position when the indexer drops them, and the query's own gaps have to line up with the document's. `"printer of the year"` therefore matches a document containing *printer of the year* and not one containing *printer year*.
+
+> Phrase search reads positions that indexing has always recorded, so unlike the BM25 change it needs **no re-indexing**.
 
 > **Upgrading an existing index:** BM25 needs field lengths, which are recorded during indexing and cannot be reconstructed afterwards. An index built before this was added must be re-indexed — documents indexed without a recorded length simply skip length normalization until then.
 
@@ -214,7 +233,7 @@ internal/
 ### Phase 2 — Search Quality
 
 * [x] BM25 ranking — supersedes the separate TF-IDF step, which it subsumes
-* [ ] Phrase search
+* [x] Phrase search
 * [ ] Prefix search and autocomplete
 * [ ] Fuzzy search
 * [ ] Synonyms
