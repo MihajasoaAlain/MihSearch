@@ -223,14 +223,15 @@ func TestSearchPhraseRequiresAdjacentTerms(t *testing.T) {
 
 func TestSearchPhraseIgnoresStopWordsOnBothSides(t *testing.T) {
 	// Stop words keep their position when they are dropped, so the query's own
-	// gaps have to line up with the document's: "printer of the year" leaves
-	// "printer" and "year" three positions apart on either side.
+	// gaps have to line up with the document's: "imprimante de bureau" leaves
+	// "imprimante" and "bureau" two positions apart on either side, while
+	// "imprimante bureau" leaves them adjacent.
 	store := newIndex(t,
-		models.Document{ID: "same-gap", Title: "Guide", Content: "printer of the year"},
-		models.Document{ID: "no-gap", Title: "Guide", Content: "printer year"},
+		models.Document{ID: "same-gap", Title: "Guide", Content: "imprimante de bureau"},
+		models.Document{ID: "no-gap", Title: "Guide", Content: "imprimante bureau"},
 	)
 
-	results, err := NewSearcher(store).Search(`"printer of the year"`)
+	results, err := NewSearcher(store).Search(`"imprimante de bureau"`)
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
