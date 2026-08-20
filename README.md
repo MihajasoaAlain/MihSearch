@@ -170,7 +170,7 @@ Wrapping part of a query in double quotes turns it into a phrase: `"wireless pri
 
 A phrase is a **filter**, not a boost. A document holding both words in the wrong order is not what was asked for, so it is dropped rather than ranked lower. Several quoted groups in one query all have to hold, and a phrase never spans the title and the content — the two are separate texts, and their positions cannot be read as one sequence.
 
-The check runs entirely on the positions already carried by the postings the query fetched, so it costs no extra round trip. Stop words are handled on both sides at once: they keep their position when the indexer drops them, and the query's own gaps have to line up with the document's. `"printer of the year"` therefore matches a document containing *printer of the year* and not one containing *printer year*.
+The check runs entirely on the positions already carried by the postings the query fetched, so it costs no extra round trip. Stop words are handled on both sides at once: they keep their position when the indexer drops them, and the query's own gaps have to line up with the document's. `"imprimante de bureau"` therefore matches a document containing *imprimante de bureau* and not one containing *imprimante bureau* — the dropped `de` leaves a gap the document has to reproduce.
 
 > Phrase search reads positions that indexing has always recorded, so unlike the BM25 change it needs **no re-indexing**.
 
